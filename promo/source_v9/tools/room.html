@@ -1,0 +1,103 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><style>html,body{margin:0;background:#000}canvas{display:block}</style></head>
+<body><canvas id="out" width="720" height="1280"></canvas>
+<script type="module">
+// Calibrated 3D gym: planes textured from the two licensed stills, modelled rim and net, player layers.
+import * as THREE from './three.module.min.js';
+const W = 720, H = 1280, SS = 1.5;
+const G = await (await fetch('room.json')).json();
+const gl = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true, alpha: false });
+gl.setPixelRatio(1); gl.setSize(W * SS, H * SS, false);
+const out = document.getElementById('out').getContext('2d');
+const scene = new THREE.Scene(); scene.background = new THREE.Color(0x777770);
+const loader = new THREE.TextureLoader();
+const tex = u => new Promise(r => loader.load(u, t => { t.anisotropy = gl.capabilities.getMaxAnisotropy(); t.colorSpace = THREE.NoColorSpace; r(t); }));
+const V3 = a => new THREE.Vector3(...a);
+const planeMats = [];
+const vs = `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`;
+const fsPlane = `uniform sampler2D tA, tB; uniform float k, gain; varying vec2 vUv;
+  void main(){ vec3 c = mix(texture2D(tB, vUv).rgb, texture2D(tA, vUv).rgb, k); gl_FragColor = vec4(c * gain, 1.0); }`;
+for (const [name, p] of Object.entries(G.planes)) {
+  const O = V3(p.O), U = V3(p.U).multiplyScalar(p.su), Vv = V3(p.V).multiplyScalar(p.sv);
+  const pts = [O, O.clone().add(U), O.clone().add(U).add(Vv), O.clone().add(Vv)];
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pts.flatMap(v => [v.x, v.y, v.z]), 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute([0, 1, 1, 1, 1, 0, 0, 0], 2));
+  g.setIndex([0, 2, 1, 0, 3, 2]);
+  const m = new THREE.ShaderMaterial({ uniforms: { tA: { value: await tex(`tex/${name}_A.jpg`) }, tB: { value: await tex(`tex/${name}_B.jpg`) }, k: { value: 0 }, gain: { value: 1 } }, vertexShader: vs, fragmentShader: fsPlane, side: THREE.DoubleSide });
+  planeMats.push(m); scene.add(new THREE.Mesh(g, m));
+}
+// second roof slope, mirrored copy of the first (never seen in the two stills)
+{
+  const p = G.planes.ceil1; const g = new THREE.BufferGeometry();
+  const pts = [[0, 11.4, 10], [24, 11.4, 10], [24, 7.2, 20], [0, 7.2, 20]];
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pts.flat(), 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute([0, 1, 1, 1, 1, 0, 0, 0], 2)); g.setIndex([0, 2, 1, 0, 3, 2]);
+  scene.add(new THREE.Mesh(g, planeMats[3]));
+}
+// hoop: rim, bracket, net, support beam
+scene.add(new THREE.AmbientLight(0xffffff, 1.6));
+const sun = new THREE.DirectionalLight(0xffffff, 1.4); sun.position.set(6, 12, 10); scene.add(sun);
+const [rx, ry, rz] = G.rim;
+const orange = new THREE.MeshLambertMaterial({ color: new THREE.Color().setRGB(0.86, 0.33, 0.14, THREE.SRGBColorSpace) });
+const rim = new THREE.Mesh(new THREE.TorusGeometry(0.2286, 0.011, 12, 72), orange); rim.rotation.x = Math.PI / 2; rim.position.set(rx, ry, rz); scene.add(rim);
+const br = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.09, 0.2), orange); br.position.set(3.22 + 0.08, ry - 0.03, rz); scene.add(br);
+const white = new THREE.MeshLambertMaterial({ color: new THREE.Color().setRGB(0.93, 0.93, 0.92, THREE.SRGBColorSpace) });
+{
+  const n = 12, lev = 5, top = 0.2286, bot = 0.15, drop = 0.42;
+  for (let s = 0; s < n; s++) for (const dir of [1, -1]) {
+    const pts = [];
+    for (let l = 0; l <= lev; l++) {
+      const a = (s + dir * 0.5 * (l % 2)) / n * Math.PI * 2, u = l / lev, rad = top + (bot - top) * Math.sqrt(u);
+      pts.push(new THREE.Vector3(rx + rad * Math.cos(a), ry - 0.012 - drop * u, rz + rad * Math.sin(a)));
+    }
+    scene.add(new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 24, 0.0055, 5), white));
+  }
+}
+const dark = new THREE.MeshLambertMaterial({ color: 0x2a2e33 });
+const beam = new THREE.Mesh(new THREE.BoxGeometry(0.12, 6.8, 0.12), dark); beam.position.set(3.08, 3.97 + 3.4, rz); scene.add(beam);
+// player layers: inflated relief meshes of the real cut-outs, placed by a per-subframe model matrix
+const playerMat = () => new THREE.ShaderMaterial({
+  uniforms: { map: { value: null }, op: { value: 1 } }, vertexShader: vs, transparent: true, depthWrite: true, side: THREE.FrontSide,
+  fragmentShader: `uniform sampler2D map; uniform float op; varying vec2 vUv;
+    void main(){ vec4 c = texture2D(map, vUv); if (c.a < 0.02) discard; gl_FragColor = vec4(c.rgb, c.a * op); }` });
+const layers = [0, 1, 2, 3].map(() => { const m = new THREE.Mesh(new THREE.BufferGeometry(), playerMat()); m.frustumCulled = false; m.renderOrder = 10; m.matrixAutoUpdate = false; scene.add(m); return m; });
+const geoCache = {}, ptex = {};
+async function ptexture(u) { if (!ptex[u]) { ptex[u] = await tex(u); ptex[u].minFilter = THREE.LinearFilter; ptex[u].generateMipmaps = false; } return ptex[u]; }
+async function geo(u) {
+  if (!geoCache[u]) {
+    const j = await (await fetch(u)).json(); const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(j.verts, 3)); g.setAttribute('uv', new THREE.Float32BufferAttribute(j.uvs, 2)); g.setIndex(j.idx);
+    geoCache[u] = { g, img: j.img };
+  }
+  return geoCache[u];
+}
+async function setLayer(L, s) {
+  if (!s) { L.visible = false; return; }
+  const G = await geo(s.geo); L.geometry = G.g; L.material.uniforms.map.value = await ptexture(G.img); L.visible = true;
+}
+function poseLayer(L, s, i) { if (!s || !L.visible) return; L.matrix.fromArray(s.mats[Math.min(i, s.mats.length - 1)]); L.matrixWorld.copy(L.matrix); L.material.uniforms.op.value = s.op ?? 1; L.material.depthWrite = (s.op ?? 1) > 0.99; }
+const cam = new THREE.PerspectiveCamera(); cam.matrixAutoUpdate = false;
+function setCam(c) {
+  const R = c.R, C = c.C;   // OpenCV world->camera rotation (rows = camera x, y down, z forward)
+  cam.matrix.set(R[0], -R[3], -R[6], C[0], R[1], -R[4], -R[7], C[1], R[2], -R[5], -R[8], C[2], 0, 0, 0, 1);
+  cam.updateMatrixWorld(true);
+  const n = 0.05, f = 120, w = c.W, h = c.H;
+  cam.projectionMatrix.set(2 * c.fx / w, 0, 1 - 2 * c.cx / w, 0, 0, 2 * c.fy / h, 2 * c.cy / h - 1, 0, 0, 0, -(f + n) / (f - n), -2 * f * n / (f - n), 0, 0, -1, 0);
+  cam.projectionMatrixInverse.copy(cam.projectionMatrix).invert();
+}
+window.frame = async spec => {
+  for (const m of planeMats) { m.uniforms.k.value = spec.k; m.uniforms.gain.value = spec.gain || 1; }
+  for (let i = 0; i < 4; i++) await setLayer(layers[i], spec.layers && spec.layers[i]);
+  const subs = spec.cams;
+  out.globalCompositeOperation = 'source-over';
+  for (let i = 0; i < subs.length; i++) {
+    setCam(subs[i]); for (let j = 0; j < 4; j++) poseLayer(layers[j], spec.layers && spec.layers[j], i);
+    gl.render(scene, cam);
+    out.globalAlpha = 1 / (i + 1); out.drawImage(gl.domElement, 0, 0, W, H);
+  }
+  out.globalAlpha = 1;
+  return true;
+};
+window.ready = true;
+</script></body></html>

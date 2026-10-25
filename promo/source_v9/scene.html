@@ -1,0 +1,746 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<style>html,body{margin:0;background:#000}canvas{display:block}</style>
+</head><body>
+<canvas id="c" width="1920" height="1080"></canvas>
+<script>
+const W = 1920, H = 1080, DUR = 57.4;
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d');
+const BRAND = 'CardPlay';
+const C = {
+  ink: '#F4F6FB', dim: '#9AA3B8', faint: '#5B6680',
+  orange: '#FF7A1A', gold: '#F5C451', blue: '#7AB4FF', teal: '#2ED3B7',
+};
+const MONO = 'DejaVu Sans Mono';
+
+// ---------- helpers ----------
+const clamp = (v, a = 0, b = 1) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const P = (t, a, b) => clamp((t - a) / (b - a));
+const eo = t => 1 - Math.pow(1 - t, 3);
+const eio = t => t < .5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+const eback = t => { const c1 = 1.70158, c3 = c1 + 1; return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2); };
+function mulberry32(a) { return function () { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+// ---------- licensed footage (see ASSETS.md) ----------
+function loadImg(src) { return new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = () => rej(new Error('missing ' + src)); i.src = src; }); }
+const pad3 = n => String(n).padStart(3, '0');
+const A = { clip: [], full: [], tiles: [], bridge: [] };
+function drawCover(g, im, x, y, w, h, z = 1, fx = .5, fy = .5) {
+  const s = Math.max(w / im.width, h / im.height) * z, iw = im.width * s, ih = im.height * s;
+  g.drawImage(im, x + (w - iw) * fx, y + (h - ih) * fy, iw, ih);
+}
+
+function rr(g, x, y, w, h, r) { g.beginPath(); g.roundRect(x, y, w, h, r); }
+function txt(g, s, x, y, o = {}) {
+  const { size = 32, weight = 600, color = C.ink, align = 'left', alpha = 1, font = 'Inter', base = 'alphabetic', ls = 0 } = o;
+  g.save(); g.globalAlpha *= alpha; g.font = `${weight} ${size}px ${font}`; g.fillStyle = color;
+  g.textAlign = align; g.textBaseline = base; g.letterSpacing = ls + 'px'; g.fillText(s, x, y); g.restore();
+}
+function measure(g, s, size, weight = 600, font = 'Inter', ls = 0) {
+  g.save(); g.font = `${weight} ${size}px ${font}`; g.letterSpacing = ls + 'px'; const w = g.measureText(s).width; g.restore(); return w;
+}
+function shade(hex, f) { const n = parseInt(hex.slice(1), 16); return `rgb(${(n >> 16) * f | 0},${(n >> 8 & 255) * f | 0},${(n & 255) * f | 0})`; }
+function check(g, x, y, s, color) {
+  g.save(); g.strokeStyle = color; g.lineWidth = s * 0.16; g.lineCap = 'round'; g.lineJoin = 'round';
+  g.beginPath(); g.moveTo(x - s * .35, y); g.lineTo(x - s * .08, y + s * .27); g.lineTo(x + s * .38, y - s * .3); g.stroke(); g.restore();
+}
+
+// ---------- the (fictional) card ----------
+const CARD = document.createElement('canvas'); CARD.width = 700; CARD.height = 980;
+const REG = {};
+function drawCardArt(g, w, h, photo = A.card) {
+  const r = w * .05;
+  const gr = g.createLinearGradient(0, 0, w, h);
+  [[0, '#FFF0B3'], [.25, '#D9A93A'], [.5, '#FFF4C8'], [.75, '#C48F2C'], [1, '#8E5F16']].forEach(([o, c]) => gr.addColorStop(o, c));
+  rr(g, 0, 0, w, h, r); g.fillStyle = gr; g.fill();
+  const m = w * .045, iw = w - 2 * m, ih = h - 2 * m;
+  g.save(); rr(g, m, m, iw, ih, r * .55); g.clip();
+  const bg = g.createLinearGradient(m, m, m + iw * .4, m + ih);
+  bg.addColorStop(0, '#1C3C86'); bg.addColorStop(.55, '#2B165E'); bg.addColorStop(1, '#0A0D24');
+  g.fillStyle = bg; g.fillRect(m, m, iw, ih);
+  drawCover(g, photo, m, m, iw, ih, 1.02, .5, .3);
+  // foil sheen + set colourway over the photo
+  const tint = g.createLinearGradient(m, m, m + iw, m + ih);
+  tint.addColorStop(0, 'rgba(255,196,90,0.16)'); tint.addColorStop(.5, 'rgba(255,255,255,0)'); tint.addColorStop(1, 'rgba(60,40,140,0.28)');
+  g.fillStyle = tint; g.fillRect(m, m, iw, ih);
+  const top = g.createLinearGradient(0, m, 0, m + ih * .2); top.addColorStop(0, 'rgba(5,8,20,0.7)'); top.addColorStop(1, 'rgba(5,8,20,0)');
+  g.fillStyle = top; g.fillRect(m, m, iw, ih * .2);
+  const np = g.createLinearGradient(0, m + ih * .74, 0, m + ih);
+  np.addColorStop(0, 'rgba(5,8,20,0)'); np.addColorStop(.35, 'rgba(5,8,20,0.88)'); np.addColorStop(1, 'rgba(5,8,20,0.96)');
+  g.fillStyle = np; g.fillRect(m, m + ih * .74, iw, ih * .26);
+  g.restore();
+  // name plate
+  const nx = m + iw * .06, ny = m + ih * .885, ns = w * .085;
+  txt(g, 'KAI MERCER', nx, ny, { size: ns, weight: 800, ls: w * .004 });
+  txt(g, 'HARBOR CITY COMETS  ·  F', nx, m + ih * .94, { size: w * .034, weight: 600, color: '#C9CFDF', ls: w * .003 });
+  const nw = Math.max(measure(g, 'KAI MERCER', ns, 800, 'Inter', w * .004), measure(g, 'HARBOR CITY COMETS  ·  F', w * .034, 600, 'Inter', w * .003));
+  REG.name = [(nx - 10) / w, (ny - ns * .82) / h, (nw + 20) / w, (m + ih * .955 - (ny - ns * .82)) / h];
+  // serial
+  const sx = m + iw * .94, sy = m + ih * .905, ss = w * .05;
+  txt(g, '12/50', sx, sy, { size: ss, weight: 800, color: C.gold, align: 'right' });
+  const sw = measure(g, '12/50', ss, 800);
+  REG.serial = [(sx - sw - 10) / w, (sy - ss * .85) / h, (sw + 20) / w, (ss * 1.1) / h];
+  // set logo
+  const lx = m + iw * .06, ly = m + ih * .075, ls2 = w * .05;
+  txt(g, 'PRIME', lx, ly, { size: ls2, weight: 900, color: C.gold, ls: w * .01 });
+  txt(g, '2025–26', lx, m + ih * .112, { size: w * .03, weight: 600, color: '#E8D9A8' });
+  const lw = measure(g, 'PRIME', ls2, 900, 'Inter', w * .01);
+  REG.set = [(lx - 10) / w, (ly - ls2 * .85) / h, (lw + 20) / w, (m + ih * .125 - (ly - ls2 * .85)) / h];
+  // rookie badge
+  const bx = m + iw * .8, by = m + ih * .035, bw = iw * .15, bh = ih * .085;
+  g.beginPath(); g.moveTo(bx, by); g.lineTo(bx + bw, by); g.lineTo(bx + bw, by + bh * .62); g.lineTo(bx + bw / 2, by + bh); g.lineTo(bx, by + bh * .62); g.closePath();
+  const bgr = g.createLinearGradient(bx, by, bx + bw, by + bh); bgr.addColorStop(0, '#FFE7A0'); bgr.addColorStop(1, '#C7922E');
+  g.fillStyle = bgr; g.fill();
+  txt(g, 'RC', bx + bw / 2, by + bh * .56, { size: bw * .42, weight: 900, color: '#1A1030', align: 'center' });
+  REG.rc = [(bx - 8) / w, (by - 8) / h, (bw + 16) / w, (bh + 16) / h];
+}
+
+const TMP = document.createElement('canvas'); TMP.width = 700; TMP.height = 980; const tg = TMP.getContext('2d');
+// Card rotated about its vertical axis with true perspective, drawn as thin vertical slices.
+function drawCard3D(g, cx, cy, ch, ang, shim = -1, glow = 0, src = CARD) {
+  tg.clearRect(0, 0, 700, 980); tg.drawImage(src, 0, 0);
+  tg.save(); rr(tg, 0, 0, 700, 980, 35); tg.clip();
+  if (shim >= 0 && shim <= 1) {
+    tg.globalCompositeOperation = 'lighter';
+    const x = lerp(-600, 1300, shim);
+    const gr = tg.createLinearGradient(x - 300, 0, x + 300, 420);
+    gr.addColorStop(0, 'rgba(255,255,255,0)'); gr.addColorStop(.42, 'rgba(255,220,160,0.10)');
+    gr.addColorStop(.5, 'rgba(255,255,255,0.5)'); gr.addColorStop(.58, 'rgba(150,200,255,0.12)'); gr.addColorStop(1, 'rgba(255,255,255,0)');
+    tg.fillStyle = gr; tg.fillRect(0, 0, 700, 980); tg.globalCompositeOperation = 'source-over';
+  }
+  const dark = (1 - Math.cos(ang)) * .55;
+  if (dark > 0.005) { tg.fillStyle = `rgba(0,0,0,${dark})`; tg.fillRect(0, 0, 700, 980); }
+  tg.restore();
+  const cw = ch / 1.4, N = 80, f = cw * 2.4, ca = Math.cos(ang), sa = Math.sin(ang);
+  g.save(); g.filter = 'blur(28px)'; g.fillStyle = 'rgba(0,0,0,0.55)';
+  g.beginPath(); g.ellipse(cx, cy + ch * .5, cw * .55 * Math.abs(ca) + 30, ch * .05, 0, 0, 7); g.fill(); g.restore();
+  if (glow > 0) {
+    const gg = g.createRadialGradient(cx, cy, ch * .1, cx, cy, ch * .85);
+    gg.addColorStop(0, `rgba(255,150,50,${.35 * glow})`); gg.addColorStop(1, 'rgba(255,150,50,0)');
+    g.fillStyle = gg; g.fillRect(cx - ch, cy - ch, ch * 2, ch * 2);
+  }
+  for (let i = 0; i < N; i++) {
+    const u0 = i / N - .5, u1 = (i + 1) / N - .5;
+    const p0 = f / (f + u0 * cw * sa), p1 = f / (f + u1 * cw * sa);
+    const x0 = cx + u0 * cw * ca * p0, x1 = cx + u1 * cw * ca * p1;
+    const hh = ch * (p0 + p1) / 2;
+    g.drawImage(TMP, i * 700 / N, 0, 700 / N, 980, Math.min(x0, x1), cy - hh / 2, Math.abs(x1 - x0) + .7, hh);
+  }
+}
+
+// ---------- clips (licensed footage) ----------
+// AI transition: a bullet-time camera orbit from the clip's break point (44455, under the rim) to the card moment (44448, side angle).
+// The player is a cut-out layer (Mask R-CNN); the gym is lifted to 3D with Depth Anything V2 (tools/orbit3.py). Frames are stored card-first.
+function bridgeFrame(i) { return A.bridge[clamp(Math.floor(i), 0, A.bridge.length - 1)]; }
+function aiBadge(g, x, y, label, a = 1, size = 15) {
+  g.save(); g.globalAlpha *= a;
+  const bw = measure(g, label, size, 800) + size * 2.6, bh = size * 2;
+  rr(g, x, y, bw, bh, bh / 2); g.fillStyle = 'rgba(4,33,28,0.85)'; g.fill(); g.strokeStyle = C.teal; g.lineWidth = 2; g.stroke();
+  g.fillStyle = C.teal; const sx = x + size * 1.05, sy = y + bh / 2, r = size * .45;
+  g.beginPath(); g.moveTo(sx, sy - r); g.quadraticCurveTo(sx, sy, sx + r, sy); g.quadraticCurveTo(sx, sy, sx, sy + r); g.quadraticCurveTo(sx, sy, sx - r, sy); g.quadraticCurveTo(sx, sy, sx, sy - r); g.fill();
+  txt(g, label, x + size * 1.9, y + bh / 2 + size * .36, { size, weight: 800, color: C.teal });
+  g.restore(); return bw;
+}
+function aiScan(g, w, h, u) {
+  const y = h * u; const gr = g.createLinearGradient(0, y - 60, 0, y + 4);
+  gr.addColorStop(0, 'rgba(46,211,183,0)'); gr.addColorStop(1, 'rgba(46,211,183,0.35)');
+  g.fillStyle = gr; g.fillRect(0, y - 60, w, 64); g.fillStyle = 'rgba(160,255,239,0.9)'; g.fillRect(0, y - 1, w, 2);
+  g.strokeStyle = 'rgba(46,211,183,0.9)'; g.lineWidth = 4; g.strokeRect(2, 2, w - 4, h - 4);
+}
+// ---------- footage tiles ----------
+const TILE_LABELS = ['Q1 · Layup', 'Q4 · Dunk', 'Q2 · Steal', 'Q3 · Assist', 'Q2 · Free throw', 'Q1 · Rebound', 'Q3 · Three-pointer', 'Q4 · Timeout', 'Q2 · Fast break', 'Q1 · Jump ball', 'Q4 · Block', 'Q3 · Inbound'];
+const TILE_DUR = ['0:06', '0:08', '0:05', '0:07', '0:04', '0:06', '0:07', '0:09', '0:06', '0:05', '0:06', '0:04'];
+const SELECTED = [1];
+let TILES = [];
+function buildTiles() { TILES = TILE_LABELS.map((lab, i) => {
+  const c = document.createElement('canvas'); c.width = 600; c.height = 338; const g = c.getContext('2d');
+  g.drawImage(A.tiles[i], 0, 0, 600, 338);
+  const gr = g.createLinearGradient(0, 220, 0, 338); gr.addColorStop(0, 'rgba(0,0,0,0)'); gr.addColorStop(1, 'rgba(0,0,0,0.8)');
+  g.fillStyle = gr; g.fillRect(0, 200, 600, 138);
+  txt(g, lab, 24, 312, { size: 30, weight: 700 });
+  rr(g, 600 - 96, 286, 76, 34, 8); g.fillStyle = 'rgba(0,0,0,0.6)'; g.fill();
+  txt(g, TILE_DUR[i], 600 - 58, 311, { size: 22, weight: 600, align: 'center', color: '#DDE2EE' });
+  return c;
+}); }
+
+// ---------- shared UI ----------
+function bg(t) {
+  const g = ctx.createRadialGradient(W * .5, H * .42, 40, W * .5, H * .5, W * .78);
+  g.addColorStop(0, '#121C3D'); g.addColorStop(1, '#04060D'); ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  const blob = (x, y, r, c) => { const b = ctx.createRadialGradient(x, y, 0, x, y, r); b.addColorStop(0, c); b.addColorStop(1, 'rgba(0,0,0,0)'); ctx.fillStyle = b; ctx.fillRect(x - r, y - r, 2 * r, 2 * r); };
+  blob(W * (.18 + .04 * Math.sin(t * .3)), H * .28, 560, 'rgba(255,122,26,0.10)');
+  blob(W * .82, H * (.72 + .05 * Math.cos(t * .25)), 640, 'rgba(76,141,255,0.11)');
+  ctx.fillStyle = 'rgba(255,255,255,0.035)';
+  for (let x = 24; x < W; x += 48) for (let y = 24; y < H; y += 48) ctx.fillRect(x, y, 2, 2);
+}
+function header(num, title, sub, lt) {
+  const a = eo(P(lt, .1, .6)), dy = (1 - a) * 24;
+  txt(ctx, 'STEP ' + num, 160, 150 + dy, { size: 26, weight: 700, color: C.orange, ls: 5, alpha: a });
+  txt(ctx, title, 160, 228 + dy, { size: 72, weight: 800, alpha: a });
+  txt(ctx, sub, 160, 282 + dy, { size: 32, weight: 500, color: C.dim, alpha: P(lt, .3, .8) });
+}
+function drawPhone(cx, cy, sh, screenFn) {
+  const sw = sh * 9 / 16, b = 16, pw = sw + 2 * b, ph = sh + 2 * b;
+  ctx.save();
+  ctx.shadowColor = 'rgba(0,0,0,0.6)'; ctx.shadowBlur = 80; ctx.shadowOffsetY = 40;
+  rr(ctx, cx - pw / 2, cy - ph / 2, pw, ph, 62); ctx.fillStyle = '#0B0D13'; ctx.fill();
+  ctx.shadowColor = 'transparent'; ctx.lineWidth = 3; ctx.strokeStyle = '#2C3346'; ctx.stroke();
+  const sx = cx - sw / 2, sy = cy - sh / 2;
+  ctx.save(); rr(ctx, sx, sy, sw, sh, 48); ctx.clip(); ctx.translate(sx, sy); screenFn(ctx, sw, sh); ctx.restore();
+  rr(ctx, cx - 58, sy + 14, 116, 34, 17); ctx.fillStyle = '#000'; ctx.fill();
+  ctx.restore();
+  return { sx, sy, sw, sh };
+}
+function chip(g, x, y, label, o = {}) {
+  const size = o.size || 26, padX = 22, h = size * 1.75;
+  const w = measure(g, label, size, 600) + padX * 2 + (o.check ? size : 0);
+  g.save(); g.globalAlpha *= (o.alpha ?? 1);
+  rr(g, x, y, w, h, h / 2); g.fillStyle = o.fill || 'rgba(255,255,255,0.07)'; g.fill();
+  g.strokeStyle = o.stroke || 'rgba(255,255,255,0.18)'; g.lineWidth = 2; g.stroke();
+  let tx = x + padX;
+  if (o.check) { check(g, tx + size * .35, y + h / 2, size * .8, o.color || C.teal); tx += size; }
+  txt(g, label, tx, y + h / 2 + size * .36, { size, weight: 600, color: o.color || C.ink });
+  g.restore();
+  return w;
+}
+
+// ---------- phone screens ----------
+function camAffine(w, h, lt) {
+  const j = Math.sin(lt * 2.1) * 4, k = Math.cos(lt * 1.7) * 3;
+  return new DOMMatrix().translate(w * .5 + j, h * .5 + k).rotate(-12).skewX(10).scale(1, .86);
+}
+function cameraView(g, w, h, lt) {
+  const gr = g.createLinearGradient(0, 0, w, h); gr.addColorStop(0, '#3B2B1F'); gr.addColorStop(1, '#17100B');
+  g.fillStyle = gr; g.fillRect(0, 0, w, h);
+  g.strokeStyle = 'rgba(0,0,0,0.2)';
+  for (let i = 0; i < 26; i++) { const y = i * h / 26; g.lineWidth = 1 + i % 3; g.beginPath(); g.moveTo(0, y + Math.sin(i) * 8); g.bezierCurveTo(w * .3, y + 12, w * .7, y - 12, w, y + Math.cos(i) * 8); g.stroke(); }
+  const lamp = g.createRadialGradient(w * .3, h * .2, 0, w * .3, h * .2, h * .7); lamp.addColorStop(0, 'rgba(255,220,170,0.18)'); lamp.addColorStop(1, 'rgba(0,0,0,0)');
+  g.fillStyle = lamp; g.fillRect(0, 0, w, h);
+  const ch = h * .48, cw = ch / 1.4, m = camAffine(w, h, lt);
+  g.save(); g.transform(m.a, m.b, m.c, m.d, m.e, m.f);
+  g.shadowColor = 'rgba(0,0,0,0.6)'; g.shadowBlur = 30; g.shadowOffsetY = 14;
+  g.drawImage(CARD, -cw / 2, -ch / 2, cw, ch); g.restore();
+  const corners = [[-cw / 2, -ch / 2], [cw / 2, -ch / 2], [cw / 2, ch / 2], [-cw / 2, ch / 2]].map(([x, y]) => m.transformPoint({ x, y }));
+  const screenC = [[40, 110], [w - 40, 110], [w - 40, h - 170], [40, h - 170]];
+  const u = eio(P(lt, 1.4, 2.4)), lock = lt >= 2.4;
+  const pts = corners.map((c, i) => [lerp(screenC[i][0], c.x, u), lerp(screenC[i][1], c.y, u)]);
+  if (lock) {
+    g.beginPath(); pts.forEach((p, i) => i ? g.lineTo(p[0], p[1]) : g.moveTo(p[0], p[1])); g.closePath();
+    g.fillStyle = `rgba(46,211,183,${.1 + .06 * Math.sin(lt * 10)})`; g.fill();
+    g.strokeStyle = 'rgba(46,211,183,0.9)'; g.lineWidth = 3; g.stroke();
+  }
+  g.strokeStyle = lock ? C.teal : '#FFFFFF'; g.lineWidth = 5; g.lineCap = 'round';
+  const L = 26, dirs = [[1, 1], [-1, 1], [-1, -1], [1, -1]];
+  pts.forEach((p, i) => { const [dx, dy] = dirs[i]; g.beginPath(); g.moveTo(p[0] + dx * L, p[1]); g.lineTo(p[0], p[1]); g.lineTo(p[0], p[1] + dy * L); g.stroke(); });
+  if (lt > 2.5) {
+    const a = P(lt, 2.5, 2.8);
+    const top = Math.min(...pts.map(p => p[1]));
+    const cx = pts.reduce((s, p) => s + p[0], 0) / 4;
+    g.save(); g.globalAlpha *= a;
+    const lw = measure(g, 'Card detected', 20, 700) + 40;
+    rr(g, cx - lw / 2, top - 58, lw, 38, 19); g.fillStyle = C.teal; g.fill();
+    txt(g, 'Card detected', cx, top - 32, { size: 20, weight: 700, color: '#04211C', align: 'center' });
+    g.restore();
+  }
+  // camera chrome
+  rr(g, w / 2 - 80, 62, 160, 36, 18); g.fillStyle = 'rgba(0,0,0,0.45)'; g.fill();
+  txt(g, 'Scan a card', w / 2, 86, { size: 18, weight: 600, align: 'center' });
+  g.fillStyle = 'rgba(0,0,0,0.5)'; g.fillRect(0, h - 140, w, 140);
+  const press = lt > 3.05 && lt < 3.3 ? .82 : 1;
+  g.strokeStyle = '#fff'; g.lineWidth = 5; g.beginPath(); g.arc(w / 2, h - 72, 36, 0, 7); g.stroke();
+  g.fillStyle = '#fff'; g.beginPath(); g.arc(w / 2, h - 72, 28 * press, 0, 7); g.fill();
+  if (lt > 3.1 && lt < 3.5) { g.fillStyle = `rgba(255,255,255,${1 - P(lt, 3.1, 3.5)})`; g.fillRect(0, 0, w, h); }
+  if (lt > 3.5) {
+    const a = P(lt, 3.5, 3.8), p = eio(P(lt, 3.7, 4.8));
+    g.save(); g.globalAlpha *= a;
+    g.fillStyle = 'rgba(4,6,13,0.55)'; g.fillRect(0, 0, w, h);
+    rr(g, 24, h - 190, w - 48, 104, 20); g.fillStyle = 'rgba(18,24,44,0.96)'; g.fill();
+    txt(g, p < 1 ? 'Identifying card…' : 'Card identified', 48, h - 146, { size: 22, weight: 700 });
+    rr(g, 48, h - 122, w - 96, 10, 5); g.fillStyle = 'rgba(255,255,255,0.12)'; g.fill();
+    rr(g, 48, h - 122, (w - 96) * p, 10, 5); g.fillStyle = C.teal; g.fill();
+    g.restore();
+  }
+}
+function revealBg(g, w, h, t) {
+  const gr = g.createRadialGradient(w / 2, h * .45, 10, w / 2, h * .5, h * .7); gr.addColorStop(0, '#2A1A4A'); gr.addColorStop(1, '#06070F');
+  g.fillStyle = gr; g.fillRect(0, 0, w, h);
+  g.save(); g.translate(w / 2, h * .45); g.rotate(t * .25);
+  for (let i = 0; i < 16; i++) { g.rotate(Math.PI * 2 / 16); g.beginPath(); g.moveTo(0, 0); g.lineTo(h, -h * .06); g.lineTo(h, h * .06); g.closePath(); g.fillStyle = i % 2 ? 'rgba(255,190,90,0.05)' : 'rgba(120,160,255,0.035)'; g.fill(); }
+  g.restore();
+  for (let i = 0; i < 26; i++) {
+    const r = mulberry32(i + 11), x = r() * w, sp = .3 + r() * .7, y = (r() * h - t * 60 * sp) % h, yy = y < 0 ? y + h : y;
+    g.fillStyle = `rgba(255,220,150,${.25 + .35 * r()})`; g.beginPath(); g.arc(x, yy, 1 + r() * 2.2, 0, 7); g.fill();
+  }
+}
+const SEGS = [{ a: 0, b: 3.3, l: 'Licensed clip' }, { a: 3.3, b: 5.3, l: 'AI transition', ai: true }, { a: 5.3, b: 6.3, l: 'Card moment' }, { a: 6.3, b: 10, l: 'Card and stats' }];
+// Real footage: Mixkit clip 44455 from 1.8 s up to the break point (4.5 s), 0.8x speed, 104 frames.
+function clipFrame(lt) { return A.clip[clamp(Math.floor(lt / 3.3 * (A.clip.length - 1)), 0, A.clip.length - 1)]; }
+// The transition runs from the clip's break point to the card moment, so the bridge frames play in reverse.
+function transFrame(u) { return bridgeFrame((1 - u) * A.bridge.length); }
+function outputFrame(g, w, h, ot) {
+  if (ot < 3.3) {
+    drawCover(g, clipFrame(ot), 0, 0, w, h, 1.02 + ot * .01);
+    broadcast(g, w, h, ot, 0);
+  } else if (ot < 5.3) {
+    const u = (ot - 3.3) / 2.0;
+    drawCover(g, transFrame(u), 0, 0, w, h);
+    g.strokeStyle = 'rgba(46,211,183,0.9)'; g.lineWidth = 4; g.strokeRect(2, 2, w - 4, h - 4);
+    aiBadge(g, 22, 80, 'AI transition · 3D camera move', 1, 15);
+  } else if (ot < 6.3) {
+    // the card moment, full frame, then pulled back into the card
+    const lt = ot - 5.3, z = 1 - eio(P(lt, .6, 1.0));
+    if (z < 1) {
+      revealBg(g, w, h, ot);
+      drawCard3D(g, w / 2, h * .47, h * .6, Math.sin(ot * 1.8) * .12 * (1 - z), -1, .6 * (1 - z));
+    }
+    const ch = h * .6 * .91, cw = ch * 637 / 892, bw = lerp(cw, w, z), bh = lerp(ch, h, z);
+    g.save(); g.globalAlpha *= Math.min(1, z * 1.6); drawCover(g, transFrame(1), w / 2 - bw / 2, lerp(h * .47, h / 2, z) - bh / 2, bw, bh, 1 + lt * .03 * z); g.restore();
+    const la = P(lt, .1, .3) * (1 - P(lt, .5, .7));
+    g.save(); g.globalAlpha *= la; rr(g, 22, 80, 178, 34, 8); g.fillStyle = 'rgba(6,9,20,0.82)'; g.fill();
+    g.fillStyle = C.gold; g.beginPath(); g.arc(40, 97, 6, 0, 7); g.fill();
+    txt(g, 'THE CARD MOMENT', 54, 104, { size: 15, weight: 800, ls: 1.5 }); g.restore();
+  } else {
+    const u = ot - 6.3;
+    revealBg(g, w, h, ot);
+    const m = eio(P(u, 0, .8));
+    drawCard3D(g, w / 2, lerp(h * .47, h * .33, m), lerp(h * .6, h * .42, m), Math.sin(ot * 1.8) * .12, P(u, .2, 1.2), .6);
+    const ha = P(u, .6, .9);
+    txt(g, 'ROOKIE SEASON · 2025–26', w / 2, h * .615, { size: 18, weight: 700, color: C.gold, ls: 3, align: 'center', alpha: ha });
+    const stats = [['18.4', 'PTS'], ['6.1', 'REB'], ['41%', '3PT']];
+    const gap = 12, tw = (w - 48 - 2 * gap) / 3;
+    stats.forEach(([v, l], i) => {
+      const a = eo(P(u, .7 + i * .15, 1.1 + i * .15)); const x = 24 + i * (tw + gap), y = h * .64 + (1 - a) * 20;
+      g.save(); g.globalAlpha *= a; rr(g, x, y, tw, h * .12, 16); g.fillStyle = 'rgba(255,255,255,0.08)'; g.fill();
+      g.strokeStyle = 'rgba(255,255,255,0.14)'; g.lineWidth = 1.5; g.stroke();
+      txt(g, v, x + tw / 2, y + h * .068, { size: 38, weight: 800, align: 'center' });
+      txt(g, l, x + tw / 2, y + h * .1, { size: 15, weight: 700, color: C.dim, align: 'center', ls: 2 });
+      g.restore();
+    });
+    txt(g, 'Kai Mercer', w / 2, h * .835, { size: 30, weight: 800, align: 'center', alpha: P(u, 1.2, 1.5) });
+    txt(g, 'Harbor City Comets · Rookie', w / 2, h * .868, { size: 17, weight: 500, color: C.dim, align: 'center', alpha: P(u, 1.3, 1.6) });
+  }
+  // story progress
+  const x0 = 20, tot = w - 40, gp = 6;
+  SEGS.forEach(sg => {
+    const sx = x0 + tot * sg.a / 10, sw = tot * (sg.b - sg.a) / 10 - gp;
+    rr(g, sx, 60, sw, 4, 2); g.fillStyle = 'rgba(255,255,255,0.28)'; g.fill();
+    const f = clamp((ot - sg.a) / (sg.b - sg.a)); if (f > 0) { rr(g, sx, 60, sw * f, 4, 2); g.fillStyle = sg.ai ? C.teal : '#fff'; g.fill(); }
+  });
+  txt(g, '▶ ' + BRAND, 22, h - 26, { size: 15, weight: 700, alpha: .8 });
+  txt(g, 'licensed footage', w - 22, h - 26, { size: 13, weight: 500, color: '#C5CBDA', align: 'right', alpha: .8 });
+}
+function broadcast(g, w, h, lt, which) {
+  const score = which === 0 ? ['HCC 96', 'BAY 94', 'Q4 2:11'] : (lt < 2.1 ? ['HCC 101', 'BAY 102', 'Q4 0:04'] : ['HCC 104', 'BAY 102', 'Q4 0:02']);
+  rr(g, 18, 80, 226, 32, 8); g.fillStyle = 'rgba(6,9,20,0.82)'; g.fill();
+  txt(g, score[0], 30, 102, { size: 15, weight: 800 }); txt(g, score[1], 106, 102, { size: 15, weight: 600, color: '#C5CBDA' });
+  txt(g, score[2], 232, 102, { size: 14, weight: 700, color: C.gold, align: 'right' });
+  const a = eo(P(lt, .2, .6));
+  g.save(); g.globalAlpha *= a;
+  const y = h * .8 + (1 - a) * 16;
+  g.fillStyle = C.orange; g.fillRect(22, y, 6, 58);
+  rr(g, 28, y, 290, 58, [0, 10, 10, 0]); g.fillStyle = 'rgba(6,9,20,0.85)'; g.fill();
+  txt(g, 'KAI MERCER', 42, y + 26, { size: 22, weight: 800, ls: 1 });
+  txt(g, which === 0 ? 'ROOKIE SEASON · vs BAY' : 'GAME-WINNER · vs BAY', 42, y + 48, { size: 14, weight: 600, color: C.gold, ls: 1 });
+  g.restore();
+}
+
+// ---------- scenes ----------
+function s1(lt) {
+  const u = P(lt, .2, 1.8);
+  const ang = lerp(1.38, 0, eback(u)) + Math.sin(lt * 1.6) * .06 * u;
+  drawCard3D(ctx, 1330, 545, 720, ang, P(lt, 1.6, 3.0), u);
+  const a1 = eo(P(lt, .6, 1.2)), a2 = eo(P(lt, 2.0, 2.6));
+  txt(ctx, 'Every card', 160, 440 + (1 - a1) * 30, { size: 96, weight: 800, alpha: a1 });
+  txt(ctx, 'has a moment.', 160, 548 + (1 - a1) * 30, { size: 96, weight: 800, alpha: a1 });
+  txt(ctx, 'Now watch it play.', 160, 680 + (1 - a2) * 30, { size: 64, weight: 700, color: C.orange, alpha: a2 });
+}
+function s2(lt) {
+  header('01', 'Snap', 'Point your phone at any card.', lt);
+  const bl = [['Raw, sleeved or slabbed', 0.9], ['Any angle, glare filtered', 1.15], ['No typing, no search', 1.4]];
+  bl.forEach(([s, t0], i) => { const a = eo(P(lt, t0, t0 + .4)); chip(ctx, 160 + (1 - a) * -20, 380 + i * 80, s, { check: true, alpha: a, size: 28 }); });
+  const a = eo(P(lt, 0, .7));
+  drawPhone(1240, 560 + (1 - a) * 120, 760, (g, w, h) => cameraView(g, w, h, lt));
+}
+function s3(lt) {
+  header('02', 'Recognise', 'Matched against a catalogue of every card.', lt);
+  const f = eio(P(lt, .2, 1.2));
+  const ch0 = 760 * .48;
+  const cx = lerp(1240, 640, f), cy = lerp(560, 640, f), ch = lerp(ch0, 640, f);
+  const cw = ch / 1.4;
+  const j = Math.sin(lt * 2.1) * 4 * (1 - f), k = Math.cos(lt * 1.7) * 3 * (1 - f);
+  const m = new DOMMatrix().translate(cx + j, cy + k).rotate(lerp(-12, 0, f)).skewX(lerp(10, 0, f)).scale(1, lerp(.86, 1, f));
+  ctx.save(); ctx.transform(m.a, m.b, m.c, m.d, m.e, m.f);
+  ctx.shadowColor = 'rgba(0,0,0,0.6)'; ctx.shadowBlur = 60; ctx.shadowOffsetY = 26;
+  ctx.drawImage(CARD, -cw / 2, -ch / 2, cw, ch); ctx.restore();
+  const x0 = cx - cw / 2, y0 = cy - ch / 2;
+  const sp = P(lt, 1.2, 2.4);
+  if (sp > 0 && sp < 1) {
+    const y = y0 + ch * eio(sp);
+    ctx.save(); rr(ctx, x0, y0, cw, ch, cw * .05); ctx.clip();
+    ctx.fillStyle = 'rgba(46,211,183,0.13)'; ctx.fillRect(x0, y0, cw, y - y0);
+    const gl = ctx.createLinearGradient(0, y - 40, 0, y + 6); gl.addColorStop(0, 'rgba(46,211,183,0)'); gl.addColorStop(1, 'rgba(46,211,183,0.7)');
+    ctx.fillStyle = gl; ctx.fillRect(x0, y - 40, cw, 46); ctx.restore();
+    ctx.fillStyle = '#9FFFEF'; ctx.fillRect(x0 - 16, y - 2, cw + 32, 4);
+  }
+  const rows = [['rc', 'ROOKIE CARD', 'Yes', 'rm'], ['set', 'SET', '2025–26 Prime', 'br'], ['name', 'PLAYER', 'Kai Mercer', 'tr'], ['serial', 'PARALLEL', 'Gold · 12 of 50', 'rm']];
+  rows.forEach(([key, lab, val, anc], i) => {
+    const r = REG[key]; const bx = x0 + r[0] * cw, by = y0 + r[1] * ch, bw = r[2] * cw, bh = r[3] * ch;
+    const ab = P(lt, 2.4 + i * .18, 2.7 + i * .18);
+    if (ab > 0) {
+      ctx.save(); ctx.globalAlpha *= ab; ctx.strokeStyle = C.teal; ctx.lineWidth = 3; rr(ctx, bx, by, bw, bh, 6); ctx.stroke();
+      ctx.fillStyle = 'rgba(46,211,183,0.12)'; ctx.fill(); ctx.restore();
+    }
+    const at = eo(P(lt, 2.7 + i * .25, 3.1 + i * .25));
+    const ty = 410 + i * 118, tx = 1130;
+    if (at > 0) {
+      ctx.save(); ctx.globalAlpha *= at * .8; ctx.strokeStyle = C.teal; ctx.lineWidth = 2;
+      const sx = bx + bw, sy = anc === 'rm' ? by + bh / 2 : anc === 'br' ? by + bh : by, ex = lerp(sx, tx - 24, at);
+      ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(ex, lerp(sy, ty - 14, at)); ctx.stroke();
+      ctx.fillStyle = C.teal; ctx.beginPath(); ctx.arc(sx, sy, 5, 0, 7); ctx.fill(); ctx.restore();
+      txt(ctx, lab, tx, ty - 34, { size: 20, weight: 700, color: C.dim, ls: 3, alpha: at });
+      txt(ctx, val, tx + (1 - at) * 20, ty + 14, { size: 44, weight: 800, alpha: at });
+    }
+  });
+  const ca = P(lt, 3.9, 4.2);
+  if (ca > 0) {
+    const fill = eo(P(lt, 4.0, 5.0)) * .987;
+    txt(ctx, 'Image match', 1130, 880, { size: 24, weight: 600, color: C.dim, alpha: ca });
+    txt(ctx, (fill * 100).toFixed(1) + '%', 1690, 880, { size: 28, weight: 800, color: C.teal, align: 'right', alpha: ca });
+    ctx.save(); ctx.globalAlpha *= ca; rr(ctx, 1130, 900, 560, 12, 6); ctx.fillStyle = 'rgba(255,255,255,0.1)'; ctx.fill();
+    rr(ctx, 1130, 900, 560 * fill, 12, 6); ctx.fillStyle = C.teal; ctx.fill(); ctx.restore();
+    const oa = P(lt, 4.9, 5.3);
+    if (oa > 0) { check(ctx, 1144, 960, 24, C.teal); ctx.save(); ctx.globalAlpha *= oa; ctx.restore(); txt(ctx, 'Text check passed: name, set, serial', 1172, 969, { size: 24, weight: 600, color: C.ink, alpha: oa }); }
+  }
+}
+function s4(lt) {
+  header('03', 'Find the moments', 'Searches licensed game footage, rights-checked.', lt);
+  let x = 160; const chips = ['Kai Mercer', '2025–26 season', 'Rookie year', 'Licensed only'];
+  chips.forEach((c, i) => { const a = eo(P(lt, .3 + i * .12, .6 + i * .12)); x += chip(ctx, x, 316, c, { size: 22, alpha: a, check: i === 3, color: i === 3 ? C.teal : C.ink, stroke: i === 3 ? 'rgba(46,211,183,0.6)' : undefined }) + 14; });
+  const tw = 300, th = 169, gap = 24, gx = 160, gy = 400;
+  const fly = eio(P(lt, 3.6, 4.6));
+  const dim = P(lt, 2.7, 3.1);
+  const sweepX = lerp(gx - 200, gx + 4 * (tw + gap) + 100, P(lt, 1.5, 2.7));
+  TILES.forEach((tile, i) => {
+    const c = i % 4, r = Math.floor(i / 4);
+    let x = gx + c * (tw + gap), y = gy + r * (th + gap), w = tw, h = th;
+    const sel = SELECTED.indexOf(i);
+    const ai = eo(P(lt, .5 + i * .06, .9 + i * .06));
+    if (ai <= 0) return;
+    let alpha = ai * (sel < 0 ? lerp(1, .22, dim) : 1);
+    if (sel >= 0) { const tx = 1490, ty = 470 + sel * 200, tW = 270, tH = 152; x = lerp(x, tx, fly); y = lerp(y, ty, fly); w = lerp(tw, tW, fly); h = lerp(th, tH, fly); }
+    const sc = lerp(.92, 1, ai);
+    ctx.save(); ctx.globalAlpha *= alpha; ctx.translate(x + w / 2, y + h / 2); ctx.scale(sc, sc);
+    rr(ctx, -w / 2, -h / 2, w, h, 12); ctx.save(); ctx.clip(); ctx.drawImage(tile, -w / 2, -h / 2, w, h); ctx.restore();
+    const near = Math.abs(x + w / 2 - sweepX) < 160 && lt < 2.8;
+    ctx.lineWidth = sel >= 0 && dim > 0 ? 4 : 2; ctx.strokeStyle = sel >= 0 && dim > 0 ? C.orange : (near ? 'rgba(46,211,183,0.9)' : 'rgba(255,255,255,0.14)');
+    rr(ctx, -w / 2, -h / 2, w, h, 12); ctx.stroke();
+    if (sel >= 0 && dim > 0) {
+      ctx.globalAlpha *= dim; const bw = 118;
+      rr(ctx, w / 2 - bw - 10, -h / 2 + 10, bw, 30, 15); ctx.fillStyle = C.teal; ctx.fill();
+      check(ctx, w / 2 - bw + 8, -h / 2 + 25, 16, '#04211C');
+      txt(ctx, 'Licensed', w / 2 - bw + 22, -h / 2 + 31, { size: 16, weight: 800, color: '#04211C' });
+    }
+    ctx.restore();
+  });
+  if (lt > 1.5 && lt < 2.8) {
+    const g2 = ctx.createLinearGradient(sweepX - 120, 0, sweepX + 120, 0); g2.addColorStop(0, 'rgba(46,211,183,0)'); g2.addColorStop(.5, 'rgba(46,211,183,0.16)'); g2.addColorStop(1, 'rgba(46,211,183,0)');
+    ctx.fillStyle = g2; ctx.fillRect(sweepX - 120, gy - 10, 240, 3 * th + 2 * gap + 20);
+  }
+  const ca = P(lt, 1.0, 1.4);
+  const n = Math.round(1284 * eo(P(lt, 1.0, 2.7)));
+  txt(ctx, n.toLocaleString('en-US'), 1490, 410, { size: 56, weight: 800, alpha: ca * (1 - fly) + fly * .0 + (fly > 0 ? 0 : 0) });
+  txt(ctx, 'clips scanned', 1490, 446, { size: 24, weight: 500, color: C.dim, alpha: ca * (1 - fly) });
+  const pa = P(lt, 4.4, 4.8);
+  txt(ctx, 'Closest moment', 1490, 410, { size: 40, weight: 800, alpha: pa });
+  txt(ctx, 'out of 1,284 clips', 1490, 446, { size: 24, weight: 500, color: C.dim, alpha: pa });
+}
+const CODE = [
+  '{',
+  '  "card": "Prime 2025-26 #67 Gold /50",',
+  '  "duration_s": 10,',
+  '  "shots": [',
+  '    { "t": [0, 3.3],   "clip": "Q4 dunk", "out": "break_point" },',
+  '    { "t": [3.3, 5.3], "type": "ai_transition", "camera": "3d_arc" },',
+  '    { "t": [5.3, 6.3], "type": "card_moment" },',
+  '    { "t": [6.3, 10],  "type": "card_outro" }',
+  '  ]',
+  '}'];
+function tokenize(line) {
+  const out = []; const re = /("(?:[^"\\]|\\.)*")(\s*:)?|(-?\d+(?:\.\d+)?)|([{}\[\],:])|(\s+)|([^\s"{}\[\],:]+)/g; let m;
+  while ((m = re.exec(line))) {
+    if (m[1]) { out.push([m[1], m[2] ? C.blue : C.gold]); if (m[2]) out.push([m[2], C.dim]); }
+    else if (m[3]) out.push([m[3], C.teal]); else if (m[4]) out.push([m[4], C.dim]); else out.push([m[0], C.ink]);
+  }
+  return out;
+}
+const CODE_TOK = CODE.map(tokenize);
+const CODE_LEN = CODE.map(l => l.length);
+const CODE_TOTAL = CODE_LEN.reduce((a, b) => a + b, 0);
+function lineDoneTime(i) { let c = 0; for (let k = 0; k <= i; k++) c += CODE_LEN[k]; return lerp(.3, 3.0, c / CODE_TOTAL); }
+function s5(lt) {
+  header('04', 'Direct the edit', 'An LLM writes the shot list. A template engine renders it.', lt);
+  const px = 160, py = 330, pw = 860, ph = 560;
+  const pa = eo(P(lt, .1, .5));
+  ctx.save(); ctx.globalAlpha *= pa;
+  rr(ctx, px, py, pw, ph, 18); ctx.fillStyle = 'rgba(8,12,26,0.85)'; ctx.fill(); ctx.strokeStyle = 'rgba(255,255,255,0.12)'; ctx.lineWidth = 2; ctx.stroke();
+  ['#FF5F57', '#FEBC2E', '#28C840'].forEach((c, i) => { ctx.fillStyle = c; ctx.beginPath(); ctx.arc(px + 30 + i * 24, py + 28, 7, 0, 7); ctx.fill(); });
+  txt(ctx, 'shot_list.json  ·  LLM director', px + 110, py + 35, { size: 20, weight: 600, color: C.dim });
+  ctx.restore();
+  const shown = Math.floor(CODE_TOTAL * P(lt, .3, 3.0));
+  let left = shown, cx = 0, cy = 0;
+  const fs = 21, lh = 42, ox = px + 70, oy = py + 100;
+  ctx.font = `400 ${fs}px ${MONO}`; const cwid = ctx.measureText('M').width;
+  for (let li = 0; li < CODE.length && left > 0; li++) {
+    txt(ctx, String(li + 1), px + 50, oy + li * lh, { size: 20, weight: 400, font: MONO, color: C.faint, align: 'right' });
+    let col = 0;
+    for (const [s, c] of CODE_TOK[li]) {
+      if (left <= 0) break; const part = s.slice(0, left); left -= part.length;
+      txt(ctx, part, ox + col * cwid, oy + li * lh, { size: fs, weight: 400, font: MONO, color: c }); col += part.length;
+    }
+    cx = ox + col * cwid; cy = oy + li * lh;
+    if (left > 0) left -= 0;
+  }
+  if (lt < 3.6 && Math.floor(lt * 3) % 2 === 0) { ctx.fillStyle = C.orange; ctx.fillRect(cx + 2, cy - fs * .8, cwid * .6, fs); }
+  // timeline
+  const tx = 1100, tw = 640, ty = 470, unit = tw / 10;
+  const ta = eo(P(lt, .3, .8));
+  txt(ctx, 'Edit timeline', tx, 400, { size: 26, weight: 700, alpha: ta });
+  ctx.save(); ctx.globalAlpha *= ta; ctx.strokeStyle = 'rgba(255,255,255,0.25)'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(tx, ty - 14); ctx.lineTo(tx + tw, ty - 14); ctx.stroke();
+  for (let s = 0; s <= 10; s++) { ctx.beginPath(); ctx.moveTo(tx + s * unit, ty - 14); ctx.lineTo(tx + s * unit, ty - (s % 2 ? 20 : 26)); ctx.stroke(); if (s % 2 === 0) txt(ctx, s + ' s', tx + s * unit, ty - 34, { size: 18, weight: 500, color: C.dim, align: 'center' }); }
+  ctx.restore();
+  const shots = [[0, 3.3, 'Licensed clip', 1], [3.3, 5.3, 'AI', -2], [5.3, 6.3, 'Moment', -1], [6.3, 10, 'Card + stats', -1]];
+  shots.forEach(([a, b, l, tile], i) => {
+    const t0 = lineDoneTime(4 + i), al = eo(P(lt, t0, t0 + .35));
+    if (al <= 0) return;
+    const x = tx + a * unit + 3, w = (b - a) * unit - 6, y = ty + (1 - al) * 16, h = 120;
+    ctx.save(); ctx.globalAlpha *= al; rr(ctx, x, y, w, h, 10); ctx.save(); ctx.clip();
+    if (tile >= 0) { ctx.drawImage(TILES[tile], 40, 20, 520, 230, x, y, w, h); }
+    else if (tile === -2) { const gg = ctx.createLinearGradient(x, y, x + w, y + h); gg.addColorStop(0, '#0E4F45'); gg.addColorStop(1, '#2ED3B7'); ctx.fillStyle = gg; ctx.fillRect(x, y, w, h);
+      ctx.strokeStyle = 'rgba(255,255,255,0.18)'; ctx.lineWidth = 6; for (let k = -2; k < 8; k++) { ctx.beginPath(); ctx.moveTo(x + k * 18, y + h); ctx.lineTo(x + k * 18 + 60, y); ctx.stroke(); } }
+    else { const gg = ctx.createLinearGradient(x, y, x + w, y + h); gg.addColorStop(0, '#E9B949'); gg.addColorStop(1, '#8E5F16'); ctx.fillStyle = gg; ctx.fillRect(x, y, w, h); ctx.drawImage(CARD, x + w / 2 - 34, y + 12, 68, 95); }
+    ctx.restore(); ctx.strokeStyle = tile >= 0 ? C.orange : tile === -2 ? C.teal : C.gold; ctx.lineWidth = 3; rr(ctx, x, y, w, h, 10); ctx.stroke(); ctx.restore();
+    txt(ctx, l, x + w / 2, y + h + 34, { size: 21, weight: tile === -2 ? 800 : 600, color: tile === -2 ? C.teal : C.ink, align: 'center', alpha: al });
+  });
+  const ra = P(lt, 3.1, 3.4);
+  if (ra > 0) {
+    const p = eio(P(lt, 3.2, 4.5));
+    if (p > 0 && p < 1) { const phx = tx + tw * p; ctx.fillStyle = '#fff'; ctx.fillRect(phx - 1.5, ty - 20, 3, 150); }
+    txt(ctx, p < 1 ? 'Rendering 1080 × 1920 · 10 s' : 'Rendered', tx, 740, { size: 24, weight: 600, color: p < 1 ? C.dim : C.teal, alpha: ra });
+    txt(ctx, Math.round(p * 100) + '%', tx + tw, 740, { size: 24, weight: 700, align: 'right', alpha: ra });
+    ctx.save(); ctx.globalAlpha *= ra; rr(ctx, tx, 760, tw, 12, 6); ctx.fillStyle = 'rgba(255,255,255,0.1)'; ctx.fill();
+    rr(ctx, tx, 760, tw * p, 12, 6); ctx.fillStyle = p < 1 ? C.orange : C.teal; ctx.fill(); ctx.restore();
+    if (p >= 1) txt(ctx, 'Cached for the next owner of this card.', tx, 820, { size: 22, weight: 500, color: C.dim, alpha: P(lt, 4.6, 5.0) });
+  }
+}
+// STEP 05: no licensed clip matches the card moment, so AI generates the frames in between.
+function panel(g, x, y, w, h, stroke, draw, a = 1) {
+  g.save(); g.globalAlpha *= a; g.shadowColor = 'rgba(0,0,0,0.5)'; g.shadowBlur = 40; g.shadowOffsetY = 18;
+  rr(g, x, y, w, h, 18); g.fillStyle = '#000'; g.fill(); g.shadowColor = 'transparent';
+  g.save(); rr(g, x, y, w, h, 18); g.clip(); draw(g); g.restore();
+  g.strokeStyle = stroke; g.lineWidth = 3; rr(g, x, y, w, h, 18); g.stroke(); g.restore();
+}
+// Phase A plays the whole licensed take (Mixkit 44455, 7.25 s, 20 fps) and stops on the break point,
+// the frame where the AI bridge will join it. Phase B generates the bridge.
+const FULL_S = 7.25, BREAK_S = 4.5, FULL_X = 1.8, PB = 7.3;
+function fullClipTime(lt) {
+  const st = .9, bp = st + BREAK_S / FULL_X, hold = .8, end = bp + hold + (FULL_S - BREAK_S) / FULL_X;
+  if (lt < st) return [0, 0];
+  if (lt < bp) return [(lt - st) * FULL_X, 0];
+  if (lt < bp + hold) return [BREAK_S, 1];
+  if (lt < end) return [BREAK_S + (lt - bp - hold) * FULL_X, 0];
+  return [BREAK_S, 2];
+}
+function sB(lt) {
+  header('05', 'Bridge the gap', 'No clip matches the card exactly. AI generates the frames in between.', lt);
+  const top = 340, ph = 470, pw = ph * 9 / 16, cardH = 430, cardX = 1620;
+  const ca = eo(P(lt, .3, .9));
+  ctx.save(); ctx.globalAlpha *= ca; ctx.shadowColor = 'rgba(0,0,0,0.6)'; ctx.shadowBlur = 50; ctx.shadowOffsetY = 20;
+  ctx.drawImage(CARD, cardX - cardH / 1.4 / 2, top + (1 - ca) * 30, cardH / 1.4, cardH); ctx.restore();
+  txt(ctx, 'Card moment', cardX, top + ph + 52, { size: 26, weight: 800, align: 'center', alpha: ca });
+  txt(ctx, 'side angle · mid-air', cardX, top + ph + 86, { size: 20, weight: 500, color: C.dim, align: 'center', alpha: ca });
+  if (lt < PB) {
+    // Phase A: the whole licensed clip, with a timeline and the break point
+    const fa = eo(P(lt, .5, 1.0)) * (1 - P(lt, PB - .45, PB - .05));
+    const vw = 1056, vh = 594, vx = 160, vy = 300;
+    const [ct, mode] = fullClipTime(lt);
+    const fr = A.full[clamp(Math.round(ct * 20), 0, A.full.length - 1)];
+    panel(ctx, vx, vy, vw, vh, C.orange, g => drawCover(g, fr, vx, vy, vw, vh), fa);
+    ctx.save(); ctx.globalAlpha *= fa;
+    rr(ctx, vx + 16, vy + 16, 318, 34, 8); ctx.fillStyle = 'rgba(6,9,20,0.82)'; ctx.fill();
+    txt(ctx, 'Licensed clip · full take · 7.3 s', vx + 30, vy + 39, { size: 17, weight: 700 });
+    // timeline
+    const ty = vy + vh + 44, tx0 = vx, tw = vw, bx = tx0 + tw * BREAK_S / FULL_S, px = tx0 + tw * ct / FULL_S;
+    rr(ctx, tx0, ty - 4, tw, 8, 4); ctx.fillStyle = 'rgba(255,255,255,0.14)'; ctx.fill();
+    rr(ctx, tx0, ty - 4, px - tx0, 8, 4); ctx.fillStyle = C.orange; ctx.fill();
+    txt(ctx, ct.toFixed(1) + ' s', tx0, ty + 36, { size: 18, weight: 600, color: C.dim });
+    txt(ctx, '7.3 s', tx0 + tw, ty + 36, { size: 18, weight: 600, color: C.dim, align: 'right' });
+    const ba = eo(P(lt, .9 + BREAK_S / FULL_X - .05, .9 + BREAK_S / FULL_X + .25));
+    if (ba > 0) {
+      ctx.save(); ctx.globalAlpha *= ba; ctx.fillStyle = C.teal; ctx.fillRect(bx - 2, ty - 22, 4, 44);
+      ctx.beginPath(); ctx.moveTo(bx - 10, ty - 30); ctx.lineTo(bx + 10, ty - 30); ctx.lineTo(bx, ty - 18); ctx.fill();
+      txt(ctx, 'Break point · 4.5 s', bx, ty + 36, { size: 20, weight: 800, color: C.teal, align: 'center' }); ctx.restore();
+    }
+    ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(px, ty, 9, 0, 7); ctx.fill();
+    if (mode === 1) {
+      ctx.strokeStyle = C.teal; ctx.lineWidth = 6; rr(ctx, vx, vy, vw, vh, 18); ctx.stroke();
+    }
+    ctx.restore();
+    // the explanation once the whole take has played
+    const ea = eo(P(lt, 5.8, 6.15)) * fa;
+    if (ea > 0) {
+      ctx.save(); ctx.globalAlpha *= ea;
+      rr(ctx, vx + 40, vy + vh - 150, vw - 80, 112, 14); ctx.fillStyle = 'rgba(6,9,20,0.86)'; ctx.fill();
+      ctx.strokeStyle = C.teal; ctx.lineWidth = 2; ctx.stroke(); ctx.restore();
+      txt(ctx, 'The card moment is never in this take.', vx + 70, vy + vh - 96, { size: 30, weight: 800, alpha: ea });
+      txt(ctx, 'It is shot from under the rim. From this break point, AI carries it into the card moment.', vx + 70, vy + vh - 58, { size: 22, weight: 500, color: C.dim, alpha: ea });
+    }
+    return;
+  }
+  lt -= PB - .6;
+  const kx = 300 - pw / 2, ka = eo(P(lt, .6, 1.2));
+  panel(ctx, kx, top + (1 - ka) * 30, pw, ph, C.orange, g => drawCover(g, A.clip[A.clip.length - 1], kx, top + (1 - ka) * 30, pw, ph), ka);
+  txt(ctx, 'Licensed clip at the break point', 300, top + ph + 52, { size: 26, weight: 800, align: 'center', alpha: ka });
+  txt(ctx, 'under the rim · 4.5 s', 300, top + ph + 86, { size: 20, weight: 500, color: C.dim, align: 'center', alpha: ka });
+  // the mismatch
+  const ma = eo(P(lt, 1.3, 1.7)) * (1 - P(lt, 2.4, 2.7));
+  txt(ctx, '≠', 960, top + ph / 2 + 40, { size: 140, weight: 800, color: C.orange, align: 'center', alpha: ma });
+  ['Angle', 'Framing', 'Timing'].forEach((l, i) => { const a = eo(P(lt, 1.5 + i * .15, 1.8 + i * .15)) * (1 - P(lt, 2.4, 2.7)); const w = measure(ctx, l, 22, 600) + 44; chip(ctx, 960 - w / 2, top + ph / 2 + 90 + i * 52, l, { size: 22, alpha: a, color: C.orange, stroke: 'rgba(255,122,26,0.6)' }); });
+  // the AI bridge, generated and played in the middle
+  const ga = eo(P(lt, 2.5, 3.0)), bx = 960 - pw / 2;
+  const gen = P(lt, 2.7, 3.7), play = P(lt, 3.9, 5.9);
+  if (ga > 0) {
+    panel(ctx, bx, top, pw, ph, C.teal, g => {
+      let f;
+      if (play < .15) f = transFrame(0);
+      else if (play < .9) f = transFrame((play - .15) / .75);
+      else f = transFrame(1);
+      drawCover(g, f, bx, top, pw, ph);
+      if (gen > 0 && gen < 1) aiScanAt(g, bx, top, pw, ph, gen);
+    }, ga);
+    aiBadge(ctx, bx + 14, top + 14, play > .9 ? 'card moment' : 'AI transition', ga, 15);
+    txt(ctx, 'AI-generated transition', 960, top + ph + 52, { size: 26, weight: 800, color: C.teal, align: 'center', alpha: ga });
+    txt(ctx, '3D camera move · 2 s · labelled', 960, top + ph + 86, { size: 20, weight: 500, color: C.dim, align: 'center', alpha: ga });
+    ctx.save(); ctx.globalAlpha *= ga; ctx.strokeStyle = C.teal; ctx.lineWidth = 4; ctx.lineCap = 'round';
+    for (const [x0, x1] of [[kx + pw + 30, bx - 30], [bx + pw + 30, cardX - cardH / 1.4 / 2 - 30]]) {
+      const xm = lerp(x0, x1, eo(P(lt, 2.6, 3.2))); ctx.beginPath(); ctx.moveTo(x0, top + ph / 2); ctx.lineTo(xm, top + ph / 2); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(xm - 12, top + ph / 2 - 10); ctx.lineTo(xm, top + ph / 2); ctx.lineTo(xm - 12, top + ph / 2 + 10); ctx.stroke();
+    }
+    ctx.restore();
+  }
+}
+function aiScanAt(g, x, y, w, h, u) { g.save(); g.translate(x, y); aiScan(g, w, h, u); g.restore(); }
+const OUT0 = 0.4;
+function s6(lt) {
+  const ot = clamp(lt - OUT0, 0, 10);
+  const a = eo(P(lt, 0, .5));
+  const la = eo(P(lt, .2, .8));
+  txt(ctx, 'Your card,', 160, 470 + (1 - la) * 24, { size: 84, weight: 800, alpha: la });
+  txt(ctx, 'in motion.', 160, 562 + (1 - la) * 24, { size: 84, weight: 800, color: C.orange, alpha: la });
+  txt(ctx, 'A 10-second video built', 160, 636, { size: 30, weight: 500, color: C.dim, alpha: P(lt, .6, 1.1) });
+  txt(ctx, 'around the card you own.', 160, 676, { size: 30, weight: 500, color: C.dim, alpha: P(lt, .6, 1.1) });
+  ctx.save(); ctx.globalAlpha *= a; ctx.translate(0, (1 - a) * 60);
+  drawPhone(960, 540, 880, (g, w, h) => outputFrame(g, w, h, ot));
+  ctx.restore();
+  SEGS.forEach((sg, i) => {
+    const ra = eo(P(lt, .4 + i * .12, .8 + i * .12)); const y = 360 + i * 96, x = 1320;
+    const act = ot >= sg.a && (ot < sg.b || (i === SEGS.length - 1 && ot >= 10)); const f = clamp((ot - sg.a) / (sg.b - sg.a));
+    txt(ctx, `${sg.a.toFixed(1)}–${sg.b.toFixed(1)} s`, x + 24, y, { size: 20, weight: 600, color: act ? C.orange : C.faint, alpha: ra });
+    txt(ctx, sg.l, x + 24, y + 40, { size: 32, weight: act ? 800 : 600, color: sg.ai ? C.teal : act || f >= 1 ? C.ink : C.dim, alpha: ra });
+    ctx.save(); ctx.globalAlpha *= ra; ctx.fillStyle = 'rgba(255,255,255,0.12)'; ctx.fillRect(x, y - 22, 4, 72);
+    ctx.fillStyle = C.orange; ctx.fillRect(x, y - 22, 4, 72 * f); ctx.restore();
+  });
+}
+function s7(lt) {
+  const m = eio(P(lt, 0, .7));
+  drawPhone(lerp(960, 640, m), 540, 880, (g, w, h) => {
+    outputFrame(g, w, h, 10);
+    const sa = eo(P(lt, .4, .9));
+    g.fillStyle = `rgba(0,0,0,${.35 * sa})`; g.fillRect(0, 0, w, h);
+    const ph = 210, y = h - ph * sa;
+    rr(g, 0, y, w, ph + 40, 28); g.fillStyle = '#151B2E'; g.fill();
+    rr(g, w / 2 - 30, y + 12, 60, 5, 3); g.fillStyle = 'rgba(255,255,255,0.3)'; g.fill();
+    txt(g, 'Share your video', 28, y + 52, { size: 20, weight: 700 });
+    const items = ['Save', 'Copy link', 'Share'];
+    items.forEach((l, i) => {
+      const cx = w * (i + .5) / 3, cy = y + 112;
+      g.fillStyle = i === 2 ? C.orange : 'rgba(255,255,255,0.1)'; g.beginPath(); g.arc(cx, cy, 32, 0, 7); g.fill();
+      g.strokeStyle = '#fff'; g.lineWidth = 3; g.lineCap = 'round'; g.lineJoin = 'round'; g.beginPath();
+      if (i === 0) { g.moveTo(cx, cy - 14); g.lineTo(cx, cy + 8); g.moveTo(cx - 9, cy); g.lineTo(cx, cy + 9); g.lineTo(cx + 9, cy); g.moveTo(cx - 13, cy + 15); g.lineTo(cx + 13, cy + 15); }
+      if (i === 1) { g.roundRect(cx - 14, cy - 6, 16, 12, 6); g.roundRect(cx - 2, cy - 6, 16, 12, 6); }
+      if (i === 2) { g.moveTo(cx, cy + 10); g.lineTo(cx, cy - 13); g.moveTo(cx - 9, cy - 5); g.lineTo(cx, cy - 14); g.lineTo(cx + 9, cy - 5); g.moveTo(cx - 13, cy + 2); g.lineTo(cx - 13, cy + 15); g.lineTo(cx + 13, cy + 15); g.lineTo(cx + 13, cy + 2); }
+      g.stroke();
+      txt(g, l, cx, cy + 58, { size: 16, weight: 600, align: 'center', color: '#C5CBDA' });
+    });
+  });
+  const ta = eo(P(lt, .4, .9));
+  txt(ctx, 'Share it anywhere.', 1000, 330 + (1 - ta) * 24, { size: 72, weight: 800, alpha: ta });
+  const bs = [['Licensed footage only', 'Every clip carries its licence terms.'], ['AI bridges, never invents', 'Generated frames only join the card to licensed clips.'], ['Content credentials', 'Generated frames labelled; C2PA on every video.']];
+  bs.forEach(([t, s], i) => {
+    const a = eo(P(lt, .7 + i * .25, 1.1 + i * .25)); const y = 470 + i * 150, x = 1000 + (1 - a) * 30;
+    ctx.save(); ctx.globalAlpha *= a; ctx.fillStyle = 'rgba(46,211,183,0.16)'; ctx.beginPath(); ctx.arc(x + 32, y + 6, 32, 0, 7); ctx.fill(); ctx.restore();
+    if (a > 0) { ctx.save(); ctx.globalAlpha *= a; check(ctx, x + 32, y + 6, 30, C.teal); ctx.restore(); }
+    txt(ctx, t, x + 88, y, { size: 38, weight: 700, alpha: a });
+    txt(ctx, s, x + 88, y + 42, { size: 26, weight: 500, color: C.dim, alpha: a });
+  });
+}
+function logo(g, x, y, s) {
+  const gr = g.createLinearGradient(x, y, x + s, y + s); gr.addColorStop(0, '#FF9A3D'); gr.addColorStop(1, '#E2560A');
+  rr(g, x, y, s, s, s * .24); g.fillStyle = gr; g.fill();
+  g.save(); g.translate(x + s * .5, y + s * .5); g.rotate(-.18);
+  rr(g, -s * .2, -s * .29, s * .4, s * .56, s * .06); g.strokeStyle = '#fff'; g.lineWidth = s * .06; g.stroke();
+  g.fillStyle = '#fff'; g.beginPath(); g.moveTo(-s * .06, -s * .11); g.lineTo(s * .11, 0); g.lineTo(-s * .06, s * .11); g.closePath(); g.fill();
+  g.restore();
+}
+// Finale: the card swings in playing the licensed clip; the AI transition carries it to the card moment, where it freezes.
+const LIVE = document.createElement('canvas'); LIVE.width = 700; LIVE.height = 980;
+const CLIP_S = 1.43, BRIDGE_S = 2.0;
+function liveFrame(lt) {
+  if (lt < CLIP_S) return A.clip[56 + Math.floor(lt / CLIP_S * (A.clip.length - 57))];
+  if (lt < CLIP_S + BRIDGE_S) return transFrame((lt - CLIP_S) / BRIDGE_S);
+  return A.card;
+}
+function s8(lt) {
+  drawCardArt(LIVE.getContext('2d'), 700, 980, liveFrame(lt));
+  const slam = CLIP_S + BRIDGE_S;
+  const u = P(lt, .1, 1.3), pulse = lt > slam ? Math.exp(-(lt - slam) * 3) : 0;
+  const ang = lerp(1.4, 0, eback(u)) + Math.sin(lt * 1.4) * .05 * u;
+  drawCard3D(ctx, 1330, 545 - 6 * pulse, 760 * (1 + .03 * pulse), ang, lt > slam ? P(lt, slam, slam + 1.2) : P(lt, .9, 2.0), u * (.6 + .9 * pulse), LIVE);
+  const ba = P(lt, CLIP_S - .1, CLIP_S + .1) * (1 - P(lt, slam - .2, slam));
+  if (ba > 0) aiBadge(ctx, 1330 - 150, 545 - 380 - 64, 'AI transition → card moment', ba, 20);
+  if (lt > slam && lt < slam + .35) { ctx.fillStyle = `rgba(255,236,200,${.5 * (1 - (lt - slam) / .35)})`; ctx.fillRect(0, 0, W, H); }
+  const a = eo(P(lt, .3, 1.0)), s = 96;
+  ctx.save(); ctx.globalAlpha *= a; ctx.translate(0, (1 - a) * 20);
+  logo(ctx, 160, 380, s);
+  txt(ctx, BRAND, 160 + s + 28, 462, { size: 92, weight: 800, ls: -2 });
+  ctx.restore();
+  txt(ctx, 'Scan your card.', 160, 590, { size: 64, weight: 800, alpha: eo(P(lt, .6, 1.2)) });
+  txt(ctx, 'Watch it play.', 160, 668, { size: 64, weight: 800, color: C.orange, alpha: eo(P(lt, slam - .1, slam + .4)) });
+  txt(ctx, 'Now inviting licensing and launch partners.', 160, 740, { size: 28, weight: 500, color: C.dim, alpha: eo(P(lt, slam + .3, slam + .8)) });
+  txt(ctx, 'Concept demo. Player name, team and card are fictional. Footage, music and sound licensed from Mixkit. AI transition frames are illustrative.', W / 2, 1020, { size: 18, weight: 500, color: C.faint, align: 'center', alpha: P(lt, 1.0, 1.5) });
+}
+const SC = [[0, 4.8, s1], [4.4, 9.8, s2], [9.4, 15.8, s3], [15.4, 21.3, s4], [20.9, 26.3, s5], [25.9, 39.5, sB], [39.1, 50.0, s6], [49.6, 52.6, s7], [52.2, 57.4, s8]];
+function render(t) {
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1; ctx.filter = 'none';
+  bg(t);
+  for (const [a, b, fn] of SC) {
+    if (t < a || t > b) continue;
+    const fi = a === 0 ? 1 : P(t, a + .2, a + .42), fo = b >= DUR ? 1 : 1 - P(t, b - .4, b - .2);
+    ctx.save(); ctx.globalAlpha = Math.min(fi, fo); fn(t - a, b - a); ctx.restore();
+  }
+  const v = ctx.createRadialGradient(W / 2, H / 2, H * .45, W / 2, H / 2, W * .7); v.addColorStop(0, 'rgba(0,0,0,0)'); v.addColorStop(1, 'rgba(0,0,0,0.45)');
+  ctx.fillStyle = v; ctx.fillRect(0, 0, W, H);
+  const fin = Math.max(P(t, DUR - .4, DUR), 1 - P(t, 0, .5));
+  if (fin > 0) { ctx.fillStyle = `rgba(0,0,0,${fin})`; ctx.fillRect(0, 0, W, H); }
+}
+window.DUR = DUR;
+window.READY = (async () => {
+  const L = (dir, n) => Promise.all(Array.from({ length: n }, (_, i) => loadImg(`assets/${dir}/${pad3(i + 1)}.jpg`)));
+  [A.card, A.clip, A.full, A.bridge, A.tiles] = await Promise.all([loadImg('assets/card_photo.jpg'), L('clip', 104), L('full', 145), L('bridge', 60),
+    Promise.all(TILE_LABELS.map((_, i) => loadImg(`assets/tiles/${String(i).padStart(2, '0')}.jpg`)))]);
+  drawCardArt(CARD.getContext('2d'), 700, 980); buildTiles();
+  window.render = render; render(2); return true;
+})();
+</script>
+</body></html>
